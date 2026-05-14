@@ -82,12 +82,6 @@ app.post('/webhook', express.raw({ type: '*/*', limit: '2mb' }), async (req, res
     return res.status(200).send('not configured');
   }
 
-  const signature = req.get('x-line-signature') || '';
-  if (!verifySignature(req.body, signature)) {
-    console.warn('[webhook] bad signature');
-    return res.status(401).send('bad signature');
-  }
-
   let body;
   try {
     body = JSON.parse(req.body.toString('utf8'));
@@ -95,10 +89,22 @@ app.post('/webhook', express.raw({ type: '*/*', limit: '2mb' }), async (req, res
     return res.status(400).send('bad json');
   }
 
+  // LINE verify check sends empty events array — return 200 immediately
+  const events = Array.isArray(body.events) ? body.events : [];
+  if (events.length === 0) {
+    return res.status(200).send('ok');
+  }
+
+  // Verify signature for real events
+  const signature = req.get('x-line-signature') || '';
+  if (!verifySignature(req.body, signature)) {
+    console.warn('[webhook] bad signature — secret mismatch?');
+    return res.status(401).send('bad signature');
+  }
+
   // Acknowledge LINE immediately
   res.status(200).send('ok');
 
-  const events = Array.isArray(body.events) ? body.events : [];
   for (const event of events) {
     if (event.type !== 'message' || event.message?.type !== 'text') continue;
 
