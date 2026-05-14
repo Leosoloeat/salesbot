@@ -75,6 +75,12 @@ async function replyToLine(replyToken, text) {
 
 const app = express();
 
+// Log ALL incoming requests
+app.use((req, _res, next) => {
+  console.log(`[req] ${req.method} ${req.path}`);
+  next();
+});
+
 // Webhook — raw body required for signature verification
 app.post('/webhook', express.raw({ type: '*/*', limit: '2mb' }), async (req, res) => {
   if (!LINE_SECRET || !LINE_TOKEN || !GEMINI_KEY) {
