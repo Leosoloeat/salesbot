@@ -13,8 +13,16 @@ const LINE_SECRET = process.env.LINE_CHANNEL_SECRET || '';
 const LINE_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN || '';
 const GEMINI_KEY = process.env.GEMINI_API_KEY || '';
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+const OWNER_USER_ID = process.env.OWNER_USER_ID
+  || (process.env.ADMIN_USER_IDS || '').split(',')[0].trim()
+  || '';
 
-// In-memory conversation history per user (last 10 turns)
+const lineClient = new line.messagingApi.MessagingApiClient({
+  channelAccessToken: LINE_TOKEN,
+});
+
+// ── Conversation History (in-memory, last 10 turns per user) ──
+
 const history = new Map();
 
 function getHistory(userId) {
@@ -25,24 +33,165 @@ function getHistory(userId) {
 function pushHistory(userId, role, text) {
   const h = getHistory(userId);
   h.push({ role, parts: [{ text }] });
-  if (h.length > 20) h.splice(0, 2); // keep last 10 turns (20 entries)
+  if (h.length > 20) h.splice(0, 2);
 }
 
-function loadSystemPrompt() {
+// ── Escalation Detection ──
+
+const ESCALATE_IMMEDIATE = [
+  'โอน', 'จ่าย', 'ราคาจริง', 'สัญญา', 'ตกลง',
+  'แย่', 'ไม่ดี', 'หลอก', 'โกง', 'ห่วย',
+  'ไม่พอใจ', 'ร้องเรียน', 'คืนเงิน',
+];
+
+const ESCALATE_1HR = [
+  'แพ็คเกจ', 'package', 'timeline', 'เมื่อไหร่เริ่ม',
+  'งบ', 'budget', 'เริ่มได้เลย', 'เอาเลย',
+  'ใบเสนอราคา', 'quotation', 'invoice',
+];
+
+const WANT_HUMAN = [
+  'ขอคุยกับคน', 'คุยกับคนได้ไหม', 'เจ้าของอยู่ไหม',
+  'ขอเบอร์', 'โทรได้ไหม', 'ขอติดต่อ', 'อยากคุยกับ leo',
+];
+
+// Thai phone: 06x/08x/09x + 7 digits
+const PHONE_RE = /0[689]\d[\s-]?\d{3,4}[\s-]?\d{3,4}/;
+
+const repeatTracker = new Map();
+const pendingContact = new Map();
+
+function detectEscalation(userId, text) {
+  const lower = text.toLowerCase();
+
+  // ── Phone number detected while pending contact → hand off ──
+  if (pendingContact.has(userId)) {
+    const phoneMatch = text.match(PHONE_RE);
+    if (phoneMatch) {
+      const info = pendingContact.get(userId);
+      info.phone = phoneMatch[0].replace(/[\s-]/g, '');
+      info.rawMessage = text;
+      pendingContact.delete(userId);
+      return { tier: 'contact_ready', contactInfo: info };
+    }
+  }
+
+  // ── "ขอคุยกับคน" → start collecting contact info ──
+  for (const kw of WANT_HUMAN) {
+    if (lower.includes(kw)) {
+      pendingContact.set(userId, { requestedAt: Date.now() });
+      return { tier: 'collecting', contactInfo: null };
+    }
+  }
+
+  // ── Immediate escalation keywords ──
+  for (const kw of ESCALATE_IMMEDIATE) {
+    if (lower.includes(kw)) return { tier: 'immediate', contactInfo: null };
+  }
+
+  // ── Repeated same question 3+ times → immediate ──
+  if (!repeatTracker.has(userId)) repeatTracker.set(userId, []);
+  const prev = repeatTracker.get(userId);
+  const sameCount = prev.filter(t => t === lower).length;
+  prev.push(lower);
+  if (prev.length > 10) prev.shift();
+  if (sameCount >= 2) return { tier: 'immediate', contactInfo: null };
+
+  // ── Within 1 hour keywords ──
+  for (const kw of ESCALATE_1HR) {
+    if (lower.includes(kw)) return { tier: 'within_1hr', contactInfo: null };
+  }
+
+  // ── Phone number without prior "ขอคุยกับคน" → still notify ──
+  if (PHONE_RE.test(text)) {
+    return {
+      tier: 'contact_ready',
+      contactInfo: { phone: text.match(PHONE_RE)[0].replace(/[\s-]/g, ''), rawMessage: text },
+    };
+  }
+
+  return { tier: 'auto', contactInfo: null };
+}
+
+// ── Notify Owner via LINE Push ──
+
+async function notifyOwner(userId, userText, tier, contactInfo) {
+  if (!OWNER_USER_ID) {
+    console.warn('[escalation] OWNER_USER_ID not set — skip');
+    return;
+  }
+
+  const tierLabels = {
+    immediate: '🔴 ด่วน',
+    within_1hr: '🟡 ภายใน 1 ชม.',
+    contact_ready: '📞 ลูกค้าทิ้งเบอร์แล้ว',
+  };
+  const label = tierLabels[tier] || tier;
+
+  const recent = getHistory(userId)
+    .slice(-6)
+    .map(h => `${h.role === 'user' ? '👤' : '🤖'} ${h.parts[0].text.slice(0, 80)}`)
+    .join('\n');
+
+  const lines = [
+    `${label} — แจ้งเตือนจาก SalesBot`,
+    '',
+    `User: ${userId.slice(0, 10)}...`,
+    `ข้อความ: ${userText.slice(0, 200)}`,
+  ];
+
+  if (contactInfo?.phone) {
+    lines.push('', `📱 เบอร์: ${contactInfo.phone}`);
+    if (contactInfo.rawMessage && contactInfo.rawMessage !== userText) {
+      lines.push(`ข้อความเต็ม: ${contactInfo.rawMessage.slice(0, 200)}`);
+    }
+  }
+
+  if (recent) {
+    lines.push('', `บทสนทนา:\n${recent}`);
+  }
+
   try {
-    return fs.readFileSync(path.join(__dirname, 'prompts/system.md'), 'utf8');
-  } catch {
-    return 'คุณคือ SalesBot ผู้ช่วยขายอัตโนมัติของ Leo Ai';
+    await lineClient.pushMessage({
+      to: OWNER_USER_ID,
+      messages: [{ type: 'text', text: lines.join('\n') }],
+    });
+    console.log(`[escalation] notified owner tier=${tier} user=${userId.slice(0, 10)}`);
+  } catch (err) {
+    console.error('[escalation] push failed:', err.message);
   }
 }
 
-function verifySignature(rawBody, signature) {
-  const hash = crypto
-    .createHmac('sha256', LINE_SECRET)
-    .update(rawBody)
-    .digest('base64');
-  return hash === signature;
+// ── System Prompt + Knowledge Loading ──
+
+function loadSystemPrompt() {
+  let prompt = '';
+  try {
+    prompt = fs.readFileSync(path.join(__dirname, 'prompts/system.md'), 'utf8');
+  } catch {
+    prompt = 'คุณคือ AI ผู้ช่วยของ Leo — ผู้เชี่ยวชาญยิงแอด Meta สำหรับธุรกิจ SME ไทย';
+  }
+
+  const knowledgeDir = path.join(__dirname, 'knowledge');
+  try {
+    const files = fs.readdirSync(knowledgeDir)
+      .filter(f => (f.endsWith('.txt') || f.endsWith('.md')) && f !== 'README.md');
+
+    if (files.length > 0) {
+      prompt += '\n\nKNOWLEDGE BASE (ข้อมูลจากประสบการณ์จริง — ใช้อ้างอิงได้เลย)\n';
+      for (const file of files) {
+        const content = fs.readFileSync(path.join(knowledgeDir, file), 'utf8').trim();
+        if (content) {
+          prompt += `\n--- ${file.replace(/\.(txt|md)$/, '')} ---\n${content}\n`;
+        }
+      }
+    }
+  } catch {}
+
+  return prompt;
 }
+
+// ── Gemini AI ──
 
 async function generateReply(userId, userText) {
   const genAI = new GoogleGenerativeAI(GEMINI_KEY);
@@ -51,9 +200,7 @@ async function generateReply(userId, userText) {
     systemInstruction: loadSystemPrompt(),
   });
 
-  const userHistory = getHistory(userId);
-
-  const chat = model.startChat({ history: userHistory });
+  const chat = model.startChat({ history: getHistory(userId) });
   const result = await chat.sendMessage(userText);
   const reply = result.response.text().trim();
 
@@ -63,25 +210,32 @@ async function generateReply(userId, userText) {
   return reply;
 }
 
+// ── LINE Messaging ──
+
+function verifySignature(rawBody, signature) {
+  const hash = crypto
+    .createHmac('sha256', LINE_SECRET)
+    .update(rawBody)
+    .digest('base64');
+  return hash === signature;
+}
+
 async function replyToLine(replyToken, text) {
-  const client = new line.messagingApi.MessagingApiClient({
-    channelAccessToken: LINE_TOKEN,
-  });
-  await client.replyMessage({
+  await lineClient.replyMessage({
     replyToken,
     messages: [{ type: 'text', text }],
   });
 }
 
+// ── Express Server ──
+
 const app = express();
 
-// Log ALL incoming requests
 app.use((req, _res, next) => {
   console.log(`[req] ${req.method} ${req.path}`);
   next();
 });
 
-// Webhook — raw body required for signature verification
 app.post('/webhook', express.raw({ type: '*/*', limit: '2mb' }), async (req, res) => {
   if (!LINE_SECRET || !LINE_TOKEN || !GEMINI_KEY) {
     console.error('[webhook] missing env vars');
@@ -95,21 +249,14 @@ app.post('/webhook', express.raw({ type: '*/*', limit: '2mb' }), async (req, res
     return res.status(400).send('bad json');
   }
 
-  // LINE verify check sends empty events array — return 200 immediately
   const events = Array.isArray(body.events) ? body.events : [];
-  if (events.length === 0) {
-    return res.status(200).send('ok');
-  }
+  if (events.length === 0) return res.status(200).send('ok');
 
-  // Verify signature for real events
   const signature = req.get('x-line-signature') || '';
-  const sigOk = verifySignature(req.body, signature);
-  console.log('[webhook] sig_ok=%s secret_len=%d', sigOk, LINE_SECRET.length);
-  if (!sigOk) {
-    console.warn('[webhook] bad signature — continuing anyway for debug');
+  if (!verifySignature(req.body, signature)) {
+    console.warn('[webhook] bad signature — continuing for debug');
   }
 
-  // Acknowledge LINE immediately
   res.status(200).send('ok');
 
   for (const event of events) {
@@ -119,16 +266,23 @@ app.post('/webhook', express.raw({ type: '*/*', limit: '2mb' }), async (req, res
     const userText = event.message.text || '';
     const replyToken = event.replyToken;
 
-    console.log(`[webhook] user=${userId} text="${userText}"`);
+    console.log(`[msg] user=${userId.slice(0, 10)} text="${userText.slice(0, 50)}"`);
+
+    const { tier, contactInfo } = detectEscalation(userId, userText);
+
+    if (tier === 'immediate' || tier === 'within_1hr' || tier === 'contact_ready') {
+      notifyOwner(userId, userText, tier, contactInfo).catch(err =>
+        console.error('[escalation] bg error:', err.message)
+      );
+    }
+    // tier === 'collecting' → AI handles (prompt tells it to ask for phone+time)
 
     try {
-      console.log(`[webhook] calling Gemini for user=${userId}`);
       const reply = await generateReply(userId, userText);
-      console.log(`[webhook] Gemini reply="${reply.slice(0,50)}"`);
+      console.log(`[ai] reply="${reply.slice(0, 50)}"`);
       await replyToLine(replyToken, reply);
-      console.log(`[webhook] LINE reply sent to ${userId}`);
     } catch (err) {
-      console.error('[webhook] error:', err.message, err.stack?.split('\n')[1]);
+      console.error('[webhook] error:', err.message);
       try {
         await replyToLine(replyToken, 'ขออภัยครับ ระบบขัดข้องชั่วคราว กรุณาลองใหม่อีกสักครู่นะครับ');
       } catch {}
@@ -139,8 +293,8 @@ app.post('/webhook', express.raw({ type: '*/*', limit: '2mb' }), async (req, res
 app.get('/health', (_req, res) => res.json({ ok: true, t: Date.now() }));
 
 app.listen(PORT, () => {
-  console.log(`[SalesBot] listening on port ${PORT}`);
-  console.log(`[SalesBot] webhook: POST /webhook`);
-  if (!LINE_SECRET || !LINE_TOKEN) console.warn('[SalesBot] WARNING: LINE credentials missing');
-  if (!GEMINI_KEY) console.warn('[SalesBot] WARNING: GEMINI_API_KEY missing');
+  console.log(`[SalesBot] port=${PORT} webhook=POST /webhook`);
+  if (!LINE_SECRET || !LINE_TOKEN) console.warn('[SalesBot] LINE credentials missing');
+  if (!GEMINI_KEY) console.warn('[SalesBot] GEMINI_API_KEY missing');
+  if (!OWNER_USER_ID) console.warn('[SalesBot] OWNER_USER_ID missing — escalation disabled');
 });

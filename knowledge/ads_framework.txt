@@ -1,0 +1,9 @@
+[Leo — ใส่ framework การยิงแอดที่ใช้จริงตรงนี้]
+
+ตัวอย่างหัวข้อ:
+- Campaign structure ที่ใช้ (CBO vs ABO)
+- Audience strategy (LAL, interest, broad)
+- Creative format ที่ work (carousel vs single image vs video)
+- Budget allocation rules
+- KPI benchmarks ต่อ industry (CPL, ROAS, CTR)
+- Optimization timeline (วัน 1-3 ทำอะไร, วัน 4-7 ทำอะไร)

@@ -1,0 +1,7 @@
+[Leo — ใส่ case study จริงตรงนี้ ไม่ต้องระบุชื่อลูกค้า]
+
+ตัวอย่าง format:
+ธุรกิจ: คลินิกความงาม กรุงเทพ
+ปัญหา: ยิงแอดเอง CPL 300+ บาท lead ไม่ qualify
+ทำอะไร: restructure campaign, เปลี่ยน creative เป็น before/after, ใช้ LAL จาก customer list
+ผลลัพธ์: CPL ลดเหลือ 80 บาท ภายใน 2 สัปดาห์, ROAS 5x

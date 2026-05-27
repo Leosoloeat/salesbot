@@ -1,68 +1,60 @@
-# SalesBot — Leo Ai LINE OA Sales Assistant
+# SalesLeo — LINE OA Sales Bot for Meta Ads Consulting
 
-> Gemini-powered sales bot for LINE OA.
-> Sells ebooks + AI services automatically.
-> Separate deployment from LeoSP.
+Standalone LINE OA bot for Leo's Personal Brand as Meta Ads consultant.
+Gemini-powered, auto-escalation to owner, knowledge base auto-loading.
 
----
+## Architecture
+
+```
+LINE Message → POST /webhook → Escalation Check → Gemini AI → Reply
+                                    ↓ (if triggered)
+                              Push notification → Leo's LINE
+```
 
 ## Quick Start (Local Dev)
 
 ```bash
 npm install
-# ใส่ token ใน .env ให้ครบก่อน
 npm run dev
 ```
 
-แล้วใช้ ngrok expose:
+Expose with ngrok:
 ```bash
 ngrok http 3000
 ```
 
-ไปที่ LINE Developers Console → Messaging API → Webhook URL:
-```
-https://YOUR-NGROK-URL/webhook
-```
-
----
-
-## Deploy to Railway
-
-1. Push to GitHub repo ใหม่
-2. Railway → New Project → Deploy from GitHub
-3. ใส่ Environment Variables:
-   - `LINE_CHANNEL_SECRET`
-   - `LINE_CHANNEL_ACCESS_TOKEN`
-   - `GEMINI_API_KEY`
-   - `GEMINI_MODEL` = `gemini-2.5-flash`
-4. Railway จะให้ domain → ใส่เป็น webhook URL ใน LINE Console
-
----
-
 ## Files
 
 ```
-SalesBot/
-├── index.js          — main server (Express + LINE webhook + Gemini)
-├── prompts/
-│   └── system.md     — SalesBot personality (edit ตรงนี้เลย)
-├── .env              — credentials (ห้าม commit)
-├── railway.json      — Railway deploy config
-└── Procfile          — process declaration
+SalesLeo/
+├── index.js              — server (Express + LINE webhook + Gemini + escalation)
+├── prompts/system.md     — bot personality & response rules
+├── knowledge/            — auto-loaded into system prompt
+│   ├── ads_framework.txt
+│   ├── case_studies.txt
+│   └── faq.txt
+├── .env                  — credentials (never commit)
+├── railway.json          — Railway deploy config
+└── Procfile              — process declaration
 ```
 
----
+## Environment Variables
 
-## Credentials Required
+| Key | Required | Description |
+|-----|----------|-------------|
+| LINE_CHANNEL_SECRET | Yes | LINE Developers → Channel Basic Settings |
+| LINE_CHANNEL_ACCESS_TOKEN | Yes | LINE Developers → Messaging API |
+| GEMINI_API_KEY | Yes | aistudio.google.com/app/apikey |
+| GEMINI_MODEL | No | Default: gemini-2.5-flash |
+| OWNER_USER_ID | Yes | Leo's LINE User ID for escalation push |
+| PORT | No | Default: 3000 |
 
-| Key | Source |
-|---|---|
-| LINE_CHANNEL_SECRET | LINE Developers → Channel Basic Settings |
-| LINE_CHANNEL_ACCESS_TOKEN | LINE Developers → Messaging API → Long-lived token |
-| GEMINI_API_KEY | aistudio.google.com/app/apikey |
+## Deploy to Railway
 
----
+Push to GitHub → Railway auto-deploys from `Leosoloeat/salesbot` repo.
 
-## Edit Bot Personality
+## Knowledge System
 
-แก้ไขที่ `prompts/system.md` — bot จะโหลด prompt ใหม่ทันทีโดยไม่ต้อง restart
+Drop .txt or .md files into `knowledge/` — they auto-inject into the system prompt.
+Bot uses them as real data to reference when answering customers.
+Edit `prompts/system.md` to change bot personality (reloads without restart).
