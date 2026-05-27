@@ -1,7 +1,59 @@
-[Leo — ใส่ case study จริงตรงนี้ ไม่ต้องระบุชื่อลูกค้า]
+CASE STUDY จริงจากประสบการณ์ (ไม่ระบุชื่อธุรกิจ)
 
-ตัวอย่าง format:
-ธุรกิจ: คลินิกความงาม กรุงเทพ
-ปัญหา: ยิงแอดเอง CPL 300+ บาท lead ไม่ qualify
-ทำอะไร: restructure campaign, เปลี่ยน creative เป็น before/after, ใช้ LAL จาก customer list
-ผลลัพธ์: CPL ลดเหลือ 80 บาท ภายใน 2 สัปดาห์, ROAS 5x
+== CASE 1: คลินิกความงามต่างจังหวัด — Top Performer ==
+ธุรกิจ: คลินิกความงาม จังหวัดในภาคอีสาน
+ปัญหา: ต้องการ lead เข้า inbox เยอะๆ ด้วยต้นทุนต่ำ
+สิ่งที่ทำ:
+  - ใช้ ENGAGEMENT → REPLIES objective
+  - งบ 700-1,850 บาท/วัน ต่อ campaign
+  - Creative 3-5 variants ต่อ campaign
+  - Rotate campaign ทุก 3-4 สัปดาห์
+  - เพิ่ม retargeting layer งบ 300/วัน
+ผลลัพธ์:
+  - CPM ต่ำมาก 35-80 บาท
+  - CTR สูงสุด 5.25%
+  - Cost per lead เฉลี่ย 437 บาท
+  - Lead กว่า 1,000 คนใน 90 วัน
+  - Cost per conversation ดีที่สุด 35 บาท
+บทเรียน: ต่างจังหวัด CPM ต่ำมาก → ใช้ broad targeting + ENGAGEMENT objective ชนะ
+
+== CASE 2: คลินิกความงามกรุงเทพ — CPM สูง แก้ได้ ==
+ธุรกิจ: คลินิกความงามในกรุงเทพ
+ปัญหา: CPM สูงถึง 358 บาท ต้นทุนต่อ lead สูงกว่า 5,000 บาท
+สาเหตุ: audience saturation — ปล่อย campaign นานเกินไปไม่ rotate
+สิ่งที่ทำ:
+  - Refresh audience ใหม่ทั้งหมด
+  - สร้าง creative ใหม่ ไม่แก้ campaign เดิม
+  - ปรับ targeting ให้แคบลง เน้น quality ไม่ใช่ quantity
+ผลลัพธ์: CPM ลดลง ต้นทุนต่อ lead ลดจาก 5,000+ เหลือหลักพัน
+บทเรียน: กรุงเทพ CPM สูง 85-360 บาทเป็นเรื่องปกติ แต่ถ้า > 300 ต้อง refresh ทันที
+
+== CASE 3: ใช้เงิน 68,000 ได้ lead แค่ 2 คน ==
+ธุรกิจ: คลินิกบริการ
+ปัญหา: ใช้งบ 68,000 บาท แต่ได้ lead แค่ 2 คน (ต้นทุน 34,000/lead)
+สาเหตุ: pixel/tracking พัง ไม่ได้ตรวจ + objective ตั้งผิด
+บทเรียนสำคัญ:
+  - ถ้าใช้เงินเกิน 10,000 แต่ leads < 5 → หยุดทันที ตรวจ tracking ก่อน
+  - อย่าเชื่อ CPM ต่ำ = ดี ถ้า conversion ไม่มา
+  - ต้องมี checklist ตรวจ pixel/tracking ก่อนเปิด campaign ทุกครั้ง
+
+== CASE 4: Reach เยอะแต่ lead น้อย ==
+ธุรกิจ: คลินิกความงาม
+ปัญหา: reach 882,000 คน CTR กลางๆ แต่ต้นทุนต่อ lead สูง 1,731 บาท
+สาเหตุ: audience quality ไม่ดี — reach กว้างเกินไป
+สิ่งที่ทำ: ปรับ targeting ให้แคบลง เน้นคน engage จริง
+บทเรียน: Reach เยอะไม่ได้หมายความว่าดี audience quality สำคัญกว่า quantity
+
+== CASE 5: Creative ที่ CTR 3.37% — สูงสุดใน network ==
+ธุรกิจ: คลินิกความงาม
+สิ่งที่ทำ: ใช้ video content คุณภาพสูง + before/after ชัดเจน
+ผลลัพธ์: CTR 3.37% (สูงสุดใน 15 accounts) ต้นทุนต่อ lead 448 บาท
+บทเรียน: Creative แข็ง ชนะได้แม้ CPM จะสูง (CPM 178 บาท แต่ยังอยู่ Top Tier)
+
+== PATTERNS ที่เห็นจากการดูแล 40+ ธุรกิจ ==
+- ธุรกิจที่ปิดการขายผ่าน inbox/chat → ENGAGEMENT objective ดีที่สุด
+- โปรราคาถูก (เช่น Laser 99-199 บาท) = ดึง traffic เข้ามาง่าย ปิดขายต่อยอดได้
+- โปรราคาแพง (เช่น บริการ 10,000+) = ต้อง build trust ก่อน ใช้เวลามากขึ้น
+- คลินิกที่มี content รีวิวจริง จะปิดการขายได้ง่ายกว่า
+- การประชุม feedback กับลูกค้าทุกเดือน ช่วยปรับกลยุทธ์ได้ตรงจุด
+- ต้องมี creative สำรองพร้อมเสมอ ไม่ใช่รอให้ performance ตกก่อนค่อยทำ
