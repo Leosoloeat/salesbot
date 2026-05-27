@@ -13,6 +13,9 @@ const LINE_SECRET = process.env.LINE_CHANNEL_SECRET || '';
 const LINE_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN || '';
 const GEMINI_KEY = process.env.GEMINI_API_KEY || '';
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY || '';
+const OPENROUTER_MODEL = process.env.AI_MODEL || 'google/gemini-2.5-flash';
+const AI_PROVIDER = process.env.AI_PROVIDER || (OPENROUTER_KEY ? 'openrouter' : 'gemini');
 const OWNER_USER_ID = process.env.OWNER_USER_ID
   || (process.env.ADMIN_USER_IDS || '').split(',')[0].trim()
   || '';
@@ -55,7 +58,6 @@ const WANT_HUMAN = [
   'ขอเบอร์', 'โทรได้ไหม', 'ขอติดต่อ', 'อยากคุยกับ leo',
 ];
 
-// Thai phone: 06x/08x/09x + 7 digits
 const PHONE_RE = /0[689]\d[\s-]?\d{3,4}[\s-]?\d{3,4}/;
 
 const repeatTracker = new Map();
@@ -64,7 +66,6 @@ const pendingContact = new Map();
 function detectEscalation(userId, text) {
   const lower = text.toLowerCase();
 
-  // ── Phone number detected while pending contact → hand off ──
   if (pendingContact.has(userId)) {
     const phoneMatch = text.match(PHONE_RE);
     if (phoneMatch) {
@@ -76,7 +77,6 @@ function detectEscalation(userId, text) {
     }
   }
 
-  // ── "ขอคุยกับคน" → start collecting contact info ──
   for (const kw of WANT_HUMAN) {
     if (lower.includes(kw)) {
       pendingContact.set(userId, { requestedAt: Date.now() });
@@ -84,12 +84,10 @@ function detectEscalation(userId, text) {
     }
   }
 
-  // ── Immediate escalation keywords ──
   for (const kw of ESCALATE_IMMEDIATE) {
     if (lower.includes(kw)) return { tier: 'immediate', contactInfo: null };
   }
 
-  // ── Repeated same question 3+ times → immediate ──
   if (!repeatTracker.has(userId)) repeatTracker.set(userId, []);
   const prev = repeatTracker.get(userId);
   const sameCount = prev.filter(t => t === lower).length;
@@ -97,12 +95,10 @@ function detectEscalation(userId, text) {
   if (prev.length > 10) prev.shift();
   if (sameCount >= 2) return { tier: 'immediate', contactInfo: null };
 
-  // ── Within 1 hour keywords ──
   for (const kw of ESCALATE_1HR) {
     if (lower.includes(kw)) return { tier: 'within_1hr', contactInfo: null };
   }
 
-  // ── Phone number without prior "ขอคุยกับคน" → still notify ──
   if (PHONE_RE.test(text)) {
     return {
       tier: 'contact_ready',
@@ -191,9 +187,44 @@ function loadSystemPrompt() {
   return prompt;
 }
 
-// ── Gemini AI ──
+// ── AI Providers ──
 
-async function generateReply(userId, userText) {
+async function callOpenRouter(userId, userText) {
+  const systemPrompt = loadSystemPrompt();
+  const userHistory = getHistory(userId);
+
+  const messages = [{ role: 'system', content: systemPrompt }];
+  for (const h of userHistory) {
+    messages.push({
+      role: h.role === 'user' ? 'user' : 'assistant',
+      content: h.parts[0].text,
+    });
+  }
+  messages.push({ role: 'user', content: userText });
+
+  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${OPENROUTER_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: OPENROUTER_MODEL,
+      messages,
+      max_tokens: 500,
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`OpenRouter ${res.status}: ${err.slice(0, 200)}`);
+  }
+
+  const data = await res.json();
+  return (data.choices?.[0]?.message?.content || '').trim();
+}
+
+async function callGemini(userId, userText) {
   const genAI = new GoogleGenerativeAI(GEMINI_KEY);
   const model = genAI.getGenerativeModel({
     model: GEMINI_MODEL,
@@ -202,7 +233,19 @@ async function generateReply(userId, userText) {
 
   const chat = model.startChat({ history: getHistory(userId) });
   const result = await chat.sendMessage(userText);
-  const reply = result.response.text().trim();
+  return result.response.text().trim();
+}
+
+async function generateReply(userId, userText) {
+  let reply;
+
+  if (AI_PROVIDER === 'openrouter' && OPENROUTER_KEY) {
+    reply = await callOpenRouter(userId, userText);
+  } else if (GEMINI_KEY) {
+    reply = await callGemini(userId, userText);
+  } else {
+    throw new Error('No AI provider configured');
+  }
 
   pushHistory(userId, 'user', userText);
   pushHistory(userId, 'model', reply);
@@ -237,7 +280,8 @@ app.use((req, _res, next) => {
 });
 
 app.post('/webhook', express.raw({ type: '*/*', limit: '2mb' }), async (req, res) => {
-  if (!LINE_SECRET || !LINE_TOKEN || !GEMINI_KEY) {
+  const aiReady = (AI_PROVIDER === 'openrouter' && OPENROUTER_KEY) || GEMINI_KEY;
+  if (!LINE_SECRET || !LINE_TOKEN || !aiReady) {
     console.error('[webhook] missing env vars');
     return res.status(200).send('not configured');
   }
@@ -275,7 +319,6 @@ app.post('/webhook', express.raw({ type: '*/*', limit: '2mb' }), async (req, res
         console.error('[escalation] bg error:', err.message)
       );
     }
-    // tier === 'collecting' → AI handles (prompt tells it to ask for phone+time)
 
     try {
       const reply = await generateReply(userId, userText);
@@ -290,11 +333,12 @@ app.post('/webhook', express.raw({ type: '*/*', limit: '2mb' }), async (req, res
   }
 });
 
-app.get('/health', (_req, res) => res.json({ ok: true, t: Date.now() }));
+app.get('/health', (_req, res) => res.json({ ok: true, t: Date.now(), provider: AI_PROVIDER }));
 
 app.listen(PORT, () => {
-  console.log(`[SalesBot] port=${PORT} webhook=POST /webhook`);
+  console.log(`[SalesBot] port=${PORT} provider=${AI_PROVIDER} model=${AI_PROVIDER === 'openrouter' ? OPENROUTER_MODEL : GEMINI_MODEL}`);
   if (!LINE_SECRET || !LINE_TOKEN) console.warn('[SalesBot] LINE credentials missing');
-  if (!GEMINI_KEY) console.warn('[SalesBot] GEMINI_API_KEY missing');
+  if (AI_PROVIDER === 'openrouter' && !OPENROUTER_KEY) console.warn('[SalesBot] OPENROUTER_API_KEY missing');
+  if (AI_PROVIDER === 'gemini' && !GEMINI_KEY) console.warn('[SalesBot] GEMINI_API_KEY missing');
   if (!OWNER_USER_ID) console.warn('[SalesBot] OWNER_USER_ID missing — escalation disabled');
 });
