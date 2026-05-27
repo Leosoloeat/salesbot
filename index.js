@@ -109,6 +109,17 @@ function detectEscalation(userId, text) {
   return { tier: 'auto', contactInfo: null };
 }
 
+// ── LINE Profile ──
+
+async function getLineProfile(userId) {
+  try {
+    const profile = await lineClient.getProfile(userId);
+    return { name: profile.displayName, pic: profile.pictureUrl || '' };
+  } catch {
+    return { name: null, pic: '' };
+  }
+}
+
 // ── Notify Owner via LINE Push ──
 
 async function notifyOwner(userId, userText, tier, contactInfo) {
@@ -124,6 +135,9 @@ async function notifyOwner(userId, userText, tier, contactInfo) {
   };
   const label = tierLabels[tier] || tier;
 
+  const profile = await getLineProfile(userId);
+  const displayName = profile.name || userId.slice(0, 10) + '...';
+
   const recent = getHistory(userId)
     .slice(-6)
     .map(h => `${h.role === 'user' ? '👤' : '🤖'} ${h.parts[0].text.slice(0, 80)}`)
@@ -132,7 +146,7 @@ async function notifyOwner(userId, userText, tier, contactInfo) {
   const lines = [
     `${label} — แจ้งเตือนจาก SalesBot`,
     '',
-    `User: ${userId.slice(0, 10)}...`,
+    `👤 ${displayName}`,
     `ข้อความ: ${userText.slice(0, 200)}`,
   ];
 
@@ -311,6 +325,12 @@ app.post('/webhook', express.raw({ type: '*/*', limit: '2mb' }), async (req, res
     const replyToken = event.replyToken;
 
     console.log(`[msg] user=${userId.slice(0, 10)} text="${userText.slice(0, 50)}"`);
+
+    // Skip AI response for admin/owner — Leo ทักเข้ามาเอง ไม่ต้องตอบ
+    if (userId === OWNER_USER_ID) {
+      console.log('[msg] owner message — skipping AI response');
+      continue;
+    }
 
     const { tier, contactInfo } = detectEscalation(userId, userText);
 
