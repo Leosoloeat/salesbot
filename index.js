@@ -19,6 +19,8 @@ const AI_PROVIDER = process.env.AI_PROVIDER || (OPENROUTER_KEY ? 'openrouter' : 
 const OWNER_USER_ID = process.env.OWNER_USER_ID
   || (process.env.ADMIN_USER_IDS || '').split(',')[0].trim()
   || '';
+const RATE_LIMIT_WINDOW_MS = parseInt(process.env.RATE_LIMIT_WINDOW_MS || '60000', 10);
+const RATE_LIMIT_MAX = parseInt(process.env.RATE_LIMIT_MAX || '60', 10);
 
 const lineClient = new line.messagingApi.MessagingApiClient({
   channelAccessToken: LINE_TOKEN,
@@ -27,6 +29,11 @@ const lineClient = new line.messagingApi.MessagingApiClient({
 // ── Conversation History (in-memory, last 10 turns per user) ──
 
 const history = new Map();
+const rateBuckets = new Map();
+
+function getErrorMessage(err) {
+  return err instanceof Error ? err.message : String(err);
+}
 
 function getHistory(userId) {
   if (!history.has(userId)) history.set(userId, []);
@@ -115,7 +122,8 @@ async function getLineProfile(userId) {
   try {
     const profile = await lineClient.getProfile(userId);
     return { name: profile.displayName, pic: profile.pictureUrl || '' };
-  } catch {
+  } catch (err) {
+    console.warn(`[profile] fetch failed user=${userId.slice(0, 10)} error=${getErrorMessage(err)}`);
     return { name: null, pic: '' };
   }
 }
@@ -168,7 +176,7 @@ async function notifyOwner(userId, userText, tier, contactInfo) {
     });
     console.log(`[escalation] notified owner tier=${tier} user=${userId.slice(0, 10)}`);
   } catch (err) {
-    console.error('[escalation] push failed:', err.message);
+    console.error('[escalation] push failed:', getErrorMessage(err));
   }
 }
 
@@ -178,7 +186,8 @@ function loadSystemPrompt() {
   let prompt = '';
   try {
     prompt = fs.readFileSync(path.join(__dirname, 'prompts/system.md'), 'utf8');
-  } catch {
+  } catch (err) {
+    console.warn(`[prompt] load failed error=${getErrorMessage(err)}`);
     prompt = 'คุณคือ AI ผู้ช่วยของ Leo — ผู้เชี่ยวชาญยิงแอด Meta สำหรับธุรกิจ SME ไทย';
   }
 
@@ -190,13 +199,19 @@ function loadSystemPrompt() {
     if (files.length > 0) {
       prompt += '\n\nKNOWLEDGE BASE (ข้อมูลจากประสบการณ์จริง — ใช้อ้างอิงได้เลย)\n';
       for (const file of files) {
-        const content = fs.readFileSync(path.join(knowledgeDir, file), 'utf8').trim();
-        if (content) {
-          prompt += `\n--- ${file.replace(/\.(txt|md)$/, '')} ---\n${content}\n`;
+        try {
+          const content = fs.readFileSync(path.join(knowledgeDir, file), 'utf8').trim();
+          if (content) {
+            prompt += `\n--- ${file.replace(/\.(txt|md)$/, '')} ---\n${content}\n`;
+          }
+        } catch (err) {
+          console.warn(`[knowledge] file load failed file=${file} error=${getErrorMessage(err)}`);
         }
       }
     }
-  } catch {}
+  } catch (err) {
+    console.warn(`[knowledge] directory load failed dir=${knowledgeDir} error=${getErrorMessage(err)}`);
+  }
 
   return prompt;
 }
@@ -286,6 +301,24 @@ async function replyToLine(replyToken, text) {
 
 // ── Express Server ──
 
+function getClientKey(req) {
+  const forwarded = req.get('x-forwarded-for') || '';
+  return forwarded.split(',')[0].trim() || req.ip || 'unknown';
+}
+
+function isRateLimited(key) {
+  const now = Date.now();
+  const bucket = rateBuckets.get(key);
+
+  if (!bucket || now - bucket.startedAt >= RATE_LIMIT_WINDOW_MS) {
+    rateBuckets.set(key, { startedAt: now, count: 1 });
+    return false;
+  }
+
+  bucket.count += 1;
+  return bucket.count > RATE_LIMIT_MAX;
+}
+
 const app = express();
 
 app.use((req, _res, next) => {
@@ -300,20 +333,28 @@ app.post('/webhook', express.raw({ type: '*/*', limit: '2mb' }), async (req, res
     return res.status(200).send('not configured');
   }
 
+  const clientKey = getClientKey(req);
+  if (isRateLimited(clientKey)) {
+    console.warn(`[webhook] rate limited client=${clientKey}`);
+    return res.status(429).send('rate limited');
+  }
+
+  const webhookSignature = req.get('x-line-signature') || '';
+  if (!verifySignature(req.body, webhookSignature)) {
+    console.warn(`[webhook] rejected bad signature client=${clientKey}`);
+    return res.status(401).send('bad signature');
+  }
+
   let body;
   try {
     body = JSON.parse(req.body.toString('utf8'));
-  } catch {
+  } catch (err) {
+    console.warn(`[webhook] bad json client=${clientKey} error=${getErrorMessage(err)}`);
     return res.status(400).send('bad json');
   }
 
   const events = Array.isArray(body.events) ? body.events : [];
   if (events.length === 0) return res.status(200).send('ok');
-
-  const signature = req.get('x-line-signature') || '';
-  if (!verifySignature(req.body, signature)) {
-    console.warn('[webhook] bad signature — continuing for debug');
-  }
 
   res.status(200).send('ok');
 
@@ -336,7 +377,7 @@ app.post('/webhook', express.raw({ type: '*/*', limit: '2mb' }), async (req, res
 
     if (tier === 'immediate' || tier === 'within_1hr' || tier === 'contact_ready') {
       notifyOwner(userId, userText, tier, contactInfo).catch(err =>
-        console.error('[escalation] bg error:', err.message)
+        console.error('[escalation] bg error:', getErrorMessage(err))
       );
     }
 
@@ -345,10 +386,12 @@ app.post('/webhook', express.raw({ type: '*/*', limit: '2mb' }), async (req, res
       console.log(`[ai] reply="${reply.slice(0, 50)}"`);
       await replyToLine(replyToken, reply);
     } catch (err) {
-      console.error('[webhook] error:', err.message);
+      console.error('[webhook] error:', getErrorMessage(err));
       try {
         await replyToLine(replyToken, 'ขออภัยครับ ระบบขัดข้องชั่วคราว กรุณาลองใหม่อีกสักครู่นะครับ');
-      } catch {}
+      } catch (replyErr) {
+        console.error('[webhook] fallback reply failed:', getErrorMessage(replyErr));
+      }
     }
   }
 });
