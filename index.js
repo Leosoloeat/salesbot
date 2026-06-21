@@ -279,6 +279,17 @@ async function callGemini(userId, userText) {
   return result.response.text().trim();
 }
 
+function sanitizeReply(text) {
+  // LINE/Messenger ไม่ render markdown — ตัดสัญลักษณ์ที่จะโชว์ดิบทิ้ง
+  return String(text || '')
+    .replace(/\*\*/g, '')
+    .replace(/(^|\s)\*(?=\S)/g, '$1')
+    .replace(/^#{1,6}\s*/gm, '')
+    .replace(/```/g, '')
+    .replace(/^\s*---+\s*$/gm, '')
+    .trim();
+}
+
 async function generateReply(userId, userText) {
   let reply;
 
@@ -300,6 +311,8 @@ async function generateReply(userId, userText) {
   } else {
     throw new Error('No AI provider configured');
   }
+
+  reply = sanitizeReply(reply);
 
   pushHistory(userId, 'user', userText);
   pushHistory(userId, 'model', reply);
