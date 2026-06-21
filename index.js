@@ -22,6 +22,13 @@ const OWNER_USER_ID = process.env.OWNER_USER_ID
 const RATE_LIMIT_WINDOW_MS = parseInt(process.env.RATE_LIMIT_WINDOW_MS || '60000', 10);
 const RATE_LIMIT_MAX = parseInt(process.env.RATE_LIMIT_MAX || '60', 10);
 
+// ── Facebook Messenger (optional — only active if tokens are set) ──
+const FB_PAGE_TOKEN = process.env.FB_PAGE_ACCESS_TOKEN || process.env.PAGE_ACCESS_TOKEN || '';
+const FB_VERIFY_TOKEN = process.env.FB_VERIFY_TOKEN || process.env.VERIFY_TOKEN || '';
+const FB_APP_SECRET = process.env.FB_APP_SECRET || process.env.APP_SECRET || '';
+const FB_GRAPH_VERSION = process.env.GRAPH_API_VERSION || 'v25.0';
+const FB_ENABLED = Boolean(FB_PAGE_TOKEN);
+
 const lineClient = new line.messagingApi.MessagingApiClient({
   channelAccessToken: LINE_TOKEN,
 });
@@ -49,7 +56,7 @@ function pushHistory(userId, role, text) {
 // ── Escalation Detection ──
 
 const ESCALATE_IMMEDIATE = [
-  'โอน', 'จ่าย', 'ราคาจริง', 'สัญญา', 'ตกลง',
+  'โอน', 'โอนแล้ว', 'สลิป', 'จ่าย', 'จ่ายแล้ว', 'ราคาจริง', 'สัญญา', 'ตกลง',
   'แย่', 'ไม่ดี', 'หลอก', 'โกง', 'ห่วย',
   'ไม่พอใจ', 'ร้องเรียน', 'คืนเงิน',
 ];
@@ -130,29 +137,36 @@ async function getLineProfile(userId) {
 
 // ── Notify Owner via LINE Push ──
 
-async function notifyOwner(userId, userText, tier, contactInfo) {
+async function notifyOwner(userKey, userText, tier, contactInfo, opts = {}) {
   if (!OWNER_USER_ID) {
     console.warn('[escalation] OWNER_USER_ID not set — skip');
     return;
   }
 
+  const channel = opts.channel || 'line';
   const tierLabels = {
     immediate: '🔴 ด่วน',
     within_1hr: '🟡 ภายใน 1 ชม.',
     contact_ready: '📞 ลูกค้าทิ้งเบอร์แล้ว',
   };
   const label = tierLabels[tier] || tier;
+  const channelTag = channel === 'fb' ? ' [Messenger]' : ' [LINE]';
 
-  const profile = await getLineProfile(userId);
-  const displayName = profile.name || userId.slice(0, 10) + '...';
+  let displayName;
+  if (channel === 'line' && opts.displayId) {
+    const profile = await getLineProfile(opts.displayId);
+    displayName = profile.name || opts.displayId.slice(0, 10) + '...';
+  } else {
+    displayName = `ลูกค้า Messenger (${(opts.displayId || '').slice(0, 8)}...)`;
+  }
 
-  const recent = getHistory(userId)
+  const recent = getHistory(userKey)
     .slice(-6)
     .map(h => `${h.role === 'user' ? '👤' : '🤖'} ${h.parts[0].text.slice(0, 80)}`)
     .join('\n');
 
   const lines = [
-    `${label} — แจ้งเตือนจาก SalesBot`,
+    `${label} — แจ้งเตือนจาก SalesBot${channelTag}`,
     '',
     `👤 ${displayName}`,
     `ข้อความ: ${userText.slice(0, 200)}`,
@@ -299,6 +313,68 @@ async function replyToLine(replyToken, text) {
   });
 }
 
+// ── Facebook Messenger send + signature ──
+
+async function sendMessenger(psid, text) {
+  if (!FB_PAGE_TOKEN) {
+    console.warn('[fb] FB_PAGE_ACCESS_TOKEN not set — skip reply');
+    return;
+  }
+  const url = `https://graph.facebook.com/${FB_GRAPH_VERSION}/me/messages?access_token=${encodeURIComponent(FB_PAGE_TOKEN)}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      messaging_type: 'RESPONSE',
+      recipient: { id: psid },
+      message: { text },
+    }),
+  });
+  if (!res.ok) {
+    const detail = await res.text();
+    throw new Error(`Messenger Send API ${res.status}: ${detail.slice(0, 200)}`);
+  }
+}
+
+function verifyMetaSignature(rawBody, signatureHeader) {
+  // If no app secret configured, skip (dev/early setup). Set FB_APP_SECRET in production.
+  if (!FB_APP_SECRET) {
+    console.warn('[fb] FB_APP_SECRET not set — skipping signature check');
+    return true;
+  }
+  if (!signatureHeader || !rawBody) return false;
+  const [algo, received] = signatureHeader.split('=');
+  if (algo !== 'sha256' || !received) return false;
+  const expected = crypto.createHmac('sha256', FB_APP_SECRET).update(rawBody).digest('hex');
+  if (received.length !== expected.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(received, 'hex'), Buffer.from(expected, 'hex'));
+}
+
+// ── Shared message pipeline (channel-agnostic) ──
+
+async function processMessage({ channel, userKey, displayId, userText, sendReply }) {
+  const { tier, contactInfo } = detectEscalation(userKey, userText);
+
+  if (tier === 'immediate' || tier === 'within_1hr' || tier === 'contact_ready') {
+    notifyOwner(userKey, userText, tier, contactInfo, { channel, displayId }).catch(err =>
+      console.error('[escalation] bg error:', getErrorMessage(err))
+    );
+  }
+
+  try {
+    const reply = await generateReply(userKey, userText);
+    console.log(`[ai] channel=${channel} reply="${reply.slice(0, 50)}"`);
+    await sendReply(reply);
+  } catch (err) {
+    console.error(`[${channel}] error:`, getErrorMessage(err));
+    try {
+      await sendReply('ขออภัยครับ ระบบขัดข้องชั่วคราว กรุณาลองใหม่อีกสักครู่นะครับ');
+    } catch (replyErr) {
+      console.error(`[${channel}] fallback reply failed:`, getErrorMessage(replyErr));
+    }
+  }
+}
+
 // ── Express Server ──
 
 function getClientKey(req) {
@@ -373,33 +449,71 @@ app.post('/webhook', express.raw({ type: '*/*', limit: '2mb' }), async (req, res
       continue;
     }
 
-    const { tier, contactInfo } = detectEscalation(userId, userText);
-
-    if (tier === 'immediate' || tier === 'within_1hr' || tier === 'contact_ready') {
-      notifyOwner(userId, userText, tier, contactInfo).catch(err =>
-        console.error('[escalation] bg error:', getErrorMessage(err))
-      );
-    }
-
-    try {
-      const reply = await generateReply(userId, userText);
-      console.log(`[ai] reply="${reply.slice(0, 50)}"`);
-      await replyToLine(replyToken, reply);
-    } catch (err) {
-      console.error('[webhook] error:', getErrorMessage(err));
-      try {
-        await replyToLine(replyToken, 'ขออภัยครับ ระบบขัดข้องชั่วคราว กรุณาลองใหม่อีกสักครู่นะครับ');
-      } catch (replyErr) {
-        console.error('[webhook] fallback reply failed:', getErrorMessage(replyErr));
-      }
-    }
+    await processMessage({
+      channel: 'line',
+      userKey: userId,
+      displayId: userId,
+      userText,
+      sendReply: (text) => replyToLine(replyToken, text),
+    });
   }
 });
 
-app.get('/health', (_req, res) => res.json({ ok: true, t: Date.now(), provider: AI_PROVIDER }));
+// ── Facebook Messenger webhook ──
+
+app.get('/fb/webhook', (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+  if (mode === 'subscribe' && token === FB_VERIFY_TOKEN) {
+    console.log('[fb] webhook verified by Meta');
+    return res.status(200).send(challenge);
+  }
+  console.warn('[fb] webhook verify failed');
+  return res.sendStatus(403);
+});
+
+app.post(
+  '/fb/webhook',
+  express.json({ verify: (req, _res, buf) => { req.rawBody = buf; } }),
+  async (req, res) => {
+    if (!FB_ENABLED) return res.status(200).send('fb not configured');
+    if (!verifyMetaSignature(req.rawBody, req.get('x-hub-signature-256'))) {
+      console.warn('[fb] bad signature');
+      return res.sendStatus(401);
+    }
+
+    const body = req.body || {};
+    if (body.object !== 'page') return res.sendStatus(404);
+    res.status(200).send('EVENT_RECEIVED');
+
+    for (const entry of body.entry || []) {
+      for (const event of entry.messaging || []) {
+        try {
+          if (event.message?.is_echo) continue; // skip the page's own messages
+          const psid = event.sender?.id;
+          const text = event.message?.text;
+          if (!psid || !text) continue; // v1: text only
+          console.log(`[fb] msg psid=${psid.slice(0, 8)} text="${text.slice(0, 50)}"`);
+          await processMessage({
+            channel: 'fb',
+            userKey: `fb:${psid}`,
+            displayId: psid,
+            userText: text,
+            sendReply: (t) => sendMessenger(psid, t),
+          });
+        } catch (err) {
+          console.error('[fb] handler error:', getErrorMessage(err));
+        }
+      }
+    }
+  }
+);
+
+app.get('/health', (_req, res) => res.json({ ok: true, t: Date.now(), provider: AI_PROVIDER, fb: FB_ENABLED }));
 
 app.listen(PORT, () => {
-  console.log(`[SalesBot] port=${PORT} provider=${AI_PROVIDER} model=${AI_PROVIDER === 'openrouter' ? OPENROUTER_MODEL : GEMINI_MODEL}`);
+  console.log(`[SalesBot] port=${PORT} provider=${AI_PROVIDER} model=${AI_PROVIDER === 'openrouter' ? OPENROUTER_MODEL : GEMINI_MODEL} fb=${FB_ENABLED}`);
   if (!LINE_SECRET || !LINE_TOKEN) console.warn('[SalesBot] LINE credentials missing');
   if (AI_PROVIDER === 'openrouter' && !OPENROUTER_KEY) console.warn('[SalesBot] OPENROUTER_API_KEY missing');
   if (AI_PROVIDER === 'gemini' && !GEMINI_KEY) console.warn('[SalesBot] GEMINI_API_KEY missing');
