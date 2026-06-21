@@ -232,7 +232,7 @@ function loadSystemPrompt() {
 
 // ── AI Providers ──
 
-async function callOpenRouter(userId, userText) {
+async function callOpenRouter(userId, userText, model = OPENROUTER_MODEL) {
   const systemPrompt = loadSystemPrompt();
   const userHistory = getHistory(userId);
 
@@ -252,7 +252,7 @@ async function callOpenRouter(userId, userText) {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: OPENROUTER_MODEL,
+      model,
       messages,
       max_tokens: 500,
     }),
@@ -283,7 +283,18 @@ async function generateReply(userId, userText) {
   let reply;
 
   if (AI_PROVIDER === 'openrouter' && OPENROUTER_KEY) {
-    reply = await callOpenRouter(userId, userText);
+    const FALLBACK_MODEL = 'google/gemini-2.5-flash';
+    try {
+      reply = await callOpenRouter(userId, userText);
+    } catch (err) {
+      const m = getErrorMessage(err);
+      if (OPENROUTER_MODEL !== FALLBACK_MODEL && /\b40[04]\b|No endpoints|not a valid model|is not available/i.test(m)) {
+        console.warn(`[ai] model "${OPENROUTER_MODEL}" failed (${m.slice(0, 80)}) — retrying "${FALLBACK_MODEL}"`);
+        reply = await callOpenRouter(userId, userText, FALLBACK_MODEL);
+      } else {
+        throw err;
+      }
+    }
   } else if (GEMINI_KEY) {
     reply = await callGemini(userId, userText);
   } else {
