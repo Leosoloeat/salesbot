@@ -21,6 +21,7 @@ const OWNER_USER_ID = process.env.OWNER_USER_ID
   || '';
 const RATE_LIMIT_WINDOW_MS = parseInt(process.env.RATE_LIMIT_WINDOW_MS || '60000', 10);
 const RATE_LIMIT_MAX = parseInt(process.env.RATE_LIMIT_MAX || '60', 10);
+const FREEBIE_PDF_URL = 'https://web-ashy-two-52.vercel.app/assets/freebie/yud-pao-ngern-ad-free-chapter-checklist.pdf';
 
 // ── Facebook Messenger (optional — only active if tokens are set) ──
 const FB_PAGE_TOKEN = process.env.FB_PAGE_ACCESS_TOKEN || process.env.PAGE_ACCESS_TOKEN || '';
@@ -290,6 +291,32 @@ function sanitizeReply(text) {
     .trim();
 }
 
+function normalizeIntentText(text) {
+  return String(text || '').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+function isFreebieIntent(text) {
+  const normalized = normalizeIntentText(text);
+  return [
+    'รับ ebook',
+    'รับ e-book',
+    'ขอรับ ebook',
+    'ขอรับ e-book',
+    'รับบทแรก',
+    'ขอบทแรก',
+    'checklist ฟรี',
+  ].some(keyword => normalized.includes(keyword));
+}
+
+function buildFreebieReply() {
+  return [
+    'ได้เลยครับ ดาวน์โหลดบทแรก + checklist ฟรีได้ที่นี่:',
+    FREEBIE_PDF_URL,
+    '',
+    'ลองอ่านบทแรกดูก่อนนะครับ ธุรกิจพี่ยิงแอดอยู่แบบไหนอยู่ตอนนี้?',
+  ].join('\n');
+}
+
 async function generateReply(userId, userText) {
   let reply;
 
@@ -386,6 +413,15 @@ async function processMessage({ channel, userKey, displayId, userText, sendReply
   }
 
   try {
+    if (isFreebieIntent(userText)) {
+      const reply = buildFreebieReply();
+      pushHistory(userKey, 'user', userText);
+      pushHistory(userKey, 'model', reply);
+      console.log(`[freebie] channel=${channel} reply="${reply.slice(0, 50)}"`);
+      await sendReply(reply);
+      return;
+    }
+
     const reply = await generateReply(userKey, userText);
     console.log(`[ai] channel=${channel} reply="${reply.slice(0, 50)}"`);
     await sendReply(reply);

@@ -16,7 +16,12 @@ Excel ad tracker (about_excel):
 กรอกยอดที่ใช้ + ผลลัพธ์ เดี๋ยวมันคิด CPL/ROAS/จุดคุ้มทุนให้อัตโนมัติ เห็นเลยว่าแอดตัวไหนกำไร ตัวไหนเผาเงิน — อยู่ใน tier 349 กับ 499
 
 ของฟรี (want_freebie):
-มีบทแรก + checklist ให้ลองฟรี ลูกค้าพิมพ์ "รับ ebook" → ส่งให้ได้เลย (บทแรก/ลิงก์)
+มีบทแรก + checklist ให้ลองฟรี ลูกค้าพิมพ์ "รับ ebook" → ส่งลิงก์นี้ให้ทันที:
+https://web-ashy-two-52.vercel.app/assets/freebie/yud-pao-ngern-ad-free-chapter-checklist.pdf
+ประโยคตอบแนะนำ:
+ได้เลยครับ ดาวน์โหลดบทแรก + checklist ฟรีได้ที่นี่:
+https://web-ashy-two-52.vercel.app/assets/freebie/yud-pao-ngern-ad-free-chapter-checklist.pdf
+ลองอ่านบทแรกดูก่อนนะครับ ธุรกิจพี่ยิงแอดอยู่แบบไหนอยู่ตอนนี้?
 
 วิธีสั่งซื้อ (how_to_buy):
 1) เลือก tier (199/349/499)
